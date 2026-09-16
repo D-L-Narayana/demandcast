@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "demandcast"
+version = "0.3.0"
+description = "Store-level retail demand forecasting and inventory replenishment engine built on Python + SQL."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "D L Narayana", email = "nvr0910@gmail.com" }]
+keywords = ["retail", "forecasting", "inventory", "replenishment", "sql", "time-series", "supply-chain"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Office/Business :: Financial",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.scripts]
+demandcast = "demandcast.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["demandcast*"]
+
+[tool.setuptools.package-data]
+demandcast = ["sql/*.sql"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"demandcast/dashboard.py" = ["E501"]
+"tests/*" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
