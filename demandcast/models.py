@@ -12,6 +12,7 @@ Models included
 SeasonalNaive     — repeat the same weekday from the last full week (strong retail baseline)
 MovingAverage     — trailing mean, seasonally re-weighted by weekday profile
 HoltWinters       — additive damped-trend + additive weekly seasonality (triple exp. smoothing)
+Croston           — intermittent-demand method (separate size/interval smoothing) for slow movers
 """
 
 from __future__ import annotations
@@ -180,10 +181,47 @@ class HoltWinters(Forecaster):
 
 
 # ------------------------------------------------------------------------------------------
+class Croston(Forecaster):
+    """Croston's method (SBA-corrected) for intermittent demand.
+
+    Smooths non-zero demand sizes and inter-demand intervals separately; forecast is the
+    ratio, scaled by the Syntetos-Boylan (1 - alpha/2) bias correction.
+    """
+
+    name = "croston_sba"
+
+    def __init__(self, alpha: float = 0.1):
+        self.alpha = alpha
+        self._rate = 0.0
+
+    def fit(self, y):
+        y = self._clean(y)
+        nz = np.flatnonzero(y > 0)
+        if nz.size == 0:
+            self._rate = 0.0
+            return self
+        z = y[nz[0]]  # size
+        q = float(nz[0] + 1)  # first interval
+        interval = 1.0
+        for t in range(nz[0] + 1, y.size):
+            interval += 1
+            if y[t] > 0:
+                z = self.alpha * y[t] + (1 - self.alpha) * z
+                q = self.alpha * interval + (1 - self.alpha) * q
+                interval = 0.0
+        self._rate = (1 - self.alpha / 2) * z / max(q, 1e-9)
+        return self
+
+    def predict(self, h: int) -> np.ndarray:
+        return np.full(h, max(self._rate, 0.0))
+
+
+# ------------------------------------------------------------------------------------------
 MODEL_REGISTRY: dict[str, type[Forecaster]] = {
     SeasonalNaive.name: SeasonalNaive,
     MovingAverage.name: MovingAverage,
     HoltWinters.name: HoltWinters,
+    Croston.name: Croston,
 }
 
 
