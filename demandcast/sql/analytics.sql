@@ -128,3 +128,32 @@ SELECT day, units_sold, stockout_flag,
 FROM sales_daily
 WHERE store_id = :store_id AND product_id = :product_id
 ORDER BY day;
+
+-- name: days_of_cover
+-- Inventory health: current on-hand vs. forecast demand over the next 7 days.
+WITH latest_snap AS (
+    SELECT store_id, product_id, on_hand, on_order,
+           ROW_NUMBER() OVER (PARTITION BY store_id, product_id ORDER BY snapshot_day DESC) AS rn
+    FROM inventory_snapshots
+),
+next7 AS (
+    SELECT store_id, product_id, SUM(yhat) AS demand_7d
+    FROM forecasts
+    WHERE run_id = :run_id
+      AND target_day <= (SELECT DATE(cutoff_day, '+7 days') FROM forecast_runs WHERE run_id = :run_id)
+    GROUP BY store_id, product_id
+)
+SELECT st.store_code, p.sku, p.name, ls.on_hand, ls.on_order,
+       ROUND(n.demand_7d, 1) AS forecast_7d,
+       ROUND(7.0 * ls.on_hand / NULLIF(n.demand_7d, 0), 1) AS days_of_cover,
+       CASE WHEN n.demand_7d = 0                 THEN 'NO_DEMAND'
+            WHEN ls.on_hand < 0.5 * n.demand_7d THEN 'CRITICAL'
+            WHEN ls.on_hand < n.demand_7d        THEN 'LOW'
+            WHEN ls.on_hand > 4 * n.demand_7d    THEN 'OVERSTOCK'
+            ELSE 'OK' END AS health
+FROM latest_snap ls
+JOIN next7 n     ON n.store_id = ls.store_id AND n.product_id = ls.product_id
+JOIN stores st   ON st.store_id = ls.store_id
+JOIN products p  ON p.product_id = ls.product_id
+WHERE ls.rn = 1
+ORDER BY days_of_cover IS NULL, days_of_cover ASC;
