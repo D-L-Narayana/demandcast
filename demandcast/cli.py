@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--folds", type=int, default=4)
     r.add_argument("--service-level", type=float, default=0.95)
     r.add_argument("--review-period", type=int, default=7)
+    r.add_argument("--workers", type=int, default=0, help="process pool size (0 = all CPUs)")
 
     q = sub.add_parser("query", help="execute a named analytics query")
     q.add_argument("name", nargs="?", help="query name (omit to list)")
@@ -100,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             n_folds=a.folds,
             service_level=a.service_level,
             review_period_days=a.review_period,
+            workers=a.workers,
         )
         run_id = pipeline.run(conn, cfg)
         row = dict(conn.execute("SELECT * FROM forecast_runs WHERE run_id=?", (run_id,)).fetchone())

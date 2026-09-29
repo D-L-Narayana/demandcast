@@ -3,15 +3,19 @@
     load series from SQL  ->  backtest & select model per series  ->  forecast horizon
     ->  persist forecasts + metrics  ->  compute replenishment orders  ->  persist orders
 
-Everything is written inside a single forecast_run so a failed job never leaves partial
-output visible (status stays 'failed'; consumers filter on status = 'succeeded').
+Series are independent, so the compute-heavy step fans out over a process pool
+(`RunConfig.workers`). Everything is written inside a single forecast_run so a failed job
+never leaves partial output visible (status stays 'failed'; consumers filter on
+status = 'succeeded').
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -33,6 +37,7 @@ class RunConfig:
     review_period_days: int = 7
     service_level: float = 0.95
     interval_z: float = 1.2816  # 80 % prediction interval
+    workers: int = 0  # 0 => os.cpu_count()
 
 
 @dataclass(frozen=True)
@@ -160,6 +165,7 @@ def run(conn: sqlite3.Connection, cfg: RunConfig | None = None) -> int:
             tasks.append(
                 SeriesTask(sid, pid, y, products[pid], on_hand, on_order, model_horizon, cfg)
             )
+        workers = cfg.workers or (os.cpu_count() or 1)
         log.info(
             "run %s: %d series (%d skipped), cutoff=%s, model_horizon=%d, workers=%d",
             run_id,
@@ -170,7 +176,11 @@ def run(conn: sqlite3.Connection, cfg: RunConfig | None = None) -> int:
             workers,
         )
 
-        results = [process_series(t) for t in tasks]
+        if workers > 1 and len(tasks) > 8:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(process_series, tasks, chunksize=8))
+        else:
+            results = [process_series(t) for t in tasks]
 
         fc_rows, metric_rows, order_rows = [], [], []
         order_day = (cutoff_day + timedelta(days=1)).isoformat()
@@ -280,7 +290,7 @@ def run(conn: sqlite3.Connection, cfg: RunConfig | None = None) -> int:
             (
                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 len(tasks),
-                f"skipped={skipped}; elapsed={elapsed:.1f}s; orders={n_orders}",
+                f"skipped={skipped}; elapsed={elapsed:.1f}s; workers={workers}; orders={n_orders}",
                 run_id,
             ),
         )
