@@ -3,7 +3,7 @@
 [![CI](https://github.com/D-L-Narayana/demandcast/actions/workflows/ci.yml/badge.svg)](https://github.com/D-L-Narayana/demandcast/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Live dashboard](https://img.shields.io/badge/dashboard-live-CC0000.svg)](https://demandcast.vercel.app)
+[![Live dashboard](https://img.shields.io/badge/dashboard-live-CC0000.svg)](https://demandcast-bay.vercel.app)
 
 A retail supply-chain engine that answers two questions for every **store × SKU** pair:
 
