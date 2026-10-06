@@ -12,6 +12,7 @@ import re
 import sqlite3
 import time
 from datetime import date, timedelta
+from html.parser import HTMLParser
 
 import pytest
 
@@ -606,6 +607,132 @@ def test_dashboard_css_colour_contrast(dash_html):
         for label, (fg, bg) in pairs.items():
             ratio = _contrast(fg, bg)
             assert ratio >= 4.5, f"{scheme}: {label} {fg} on {bg} = {ratio:.2f}:1 (< 4.5:1)"
+
+
+def _split_media(css: str) -> tuple[str, dict[str, str]]:
+    """Split a stylesheet into (base rules, {media query: inner rules}) by brace depth."""
+    base: list[str] = []
+    media: dict[str, str] = {}
+    i, n = 0, len(css)
+    while i < n:
+        at = css.find("@media", i)
+        if at == -1:
+            base.append(css[i:])
+            break
+        base.append(css[i:at])
+        open_brace = css.index("{", at)
+        query = re.sub(r"\s+", "", css[at + len("@media") : open_brace])
+        depth, j = 1, open_brace + 1
+        while j < n and depth:
+            depth += {"{": 1, "}": -1}.get(css[j], 0)
+            j += 1
+        media[query] = media.get(query, "") + css[open_brace + 1 : j - 1]
+        i = j
+    return "".join(base), media
+
+
+def _css_rules(css: str) -> list[tuple[list[str], dict[str, str]]]:
+    """``[(selectors, {property: value})]`` of a media-free stylesheet, whitespace normalised."""
+    rules: list[tuple[list[str], dict[str, str]]] = []
+    for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        selectors = [re.sub(r"\s+", "", s) for s in sel.split(",") if s.strip()]
+        decls: dict[str, str] = {}
+        for decl in body.split(";"):
+            if ":" in decl:
+                key, _, val = decl.partition(":")
+                decls[key.strip().lower()] = re.sub(r"\s+", "", val).lower()
+        rules.append((selectors, decls))
+    return rules
+
+
+def _by_selector(rules: list[tuple[list[str], dict[str, str]]]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    for selectors, decls in rules:
+        for s in selectors:
+            out.setdefault(s, {}).update(decls)
+    return out
+
+
+_VOID_TAGS = {"meta", "link", "br", "hr", "img", "input", "source", "wbr", "col", "base", "embed"}
+
+
+class _GridChildren(HTMLParser):
+    """Records ``(tag, attrs)`` of every direct child of a ``.grid2`` element."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stack: list[tuple[str, bool]] = []  # (tag, is a .grid2 element)
+        self.children: list[tuple[str, dict[str, str | None]]] = []
+        self.grids = 0
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if self.stack and self.stack[-1][1]:
+            self.children.append((tag, a))
+        is_grid = "grid2" in (a.get("class") or "").split()
+        self.grids += int(is_grid)
+        if tag not in _VOID_TAGS:
+            self.stack.append((tag, is_grid))
+
+    def handle_startendtag(self, tag, attrs):
+        if self.stack and self.stack[-1][1]:
+            self.children.append((tag, dict(attrs)))
+
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == tag:
+                del self.stack[i:]
+                break
+
+
+def test_dashboard_grid_items_do_not_force_document_overflow(dash_html):
+    """Regression for the live 390-px overflow (host review #2, blocker B).
+
+    CSS-grid items default to ``min-width:auto``, so a ``<section>`` holding a nowrap table grows
+    to the table's min-content width and widens the DOCUMENT instead of letting its ``.scroll``
+    wrapper scroll. The generated CSS must shrink grid children (``min-width:0``), nothing may undo
+    it in a media block, the in-table scroll mechanism must stay, and the rule must reach every
+    ``.grid2`` child (they are all ``<section>`` elements).
+    """
+    style = re.search(r"<style>(.*?)</style>", dash_html, re.S)
+    assert style is not None
+    base_css, media = _split_media(style.group(1))
+    rules = _css_rules(base_css)
+    grid_selectors = {".grid2>section", ".grid2>*", "section"}
+    shrink = [
+        decls
+        for selectors, decls in rules
+        if grid_selectors & set(selectors) and decls.get("min-width") in {"0", "0px"}
+    ]
+    assert shrink, "grid children need min-width:0 so wide tables scroll inside .scroll"
+    for query, inner in media.items():
+        for selectors, decls in _css_rules(inner):
+            if grid_selectors & set(selectors):
+                assert decls.get("min-width", "0") in {"0", "0px"}, (query, selectors, decls)
+    by_sel = _by_selector(rules)
+    assert by_sel[".scroll"].get("overflow-x") == "auto"
+    assert by_sel[".chart"].get("width") == "100%"
+    assert by_sel[".grid2"].get("display") == "grid"
+    assert by_sel["main"].get("max-width") == "1100px"
+    for sel in ("html", "body", "main"):  # no blanket clipping of the document
+        assert by_sel.get(sel, {}).get("overflow") != "hidden", sel
+        assert by_sel.get(sel, {}).get("overflow-x") != "hidden", sel
+    narrow = next((inner for q, inner in media.items() if "max-width" in q), "")
+    assert _by_selector(_css_rules(narrow)).get(".grid2", {}).get("grid-template-columns") == "1fr"
+    # print keeps tables fully visible (overflow:visible); with shrunk grid items that is only safe
+    # in a single column (a wide table must not paint over a neighbouring column) and with cells
+    # allowed to wrap
+    print_by = _by_selector(_css_rules(media.get("print", "")))
+    assert print_by.get(".scroll", {}).get("overflow") == "visible"
+    assert print_by.get(".grid2", {}).get("grid-template-columns") == "1fr"
+    assert print_by.get("td", {}).get("white-space") == "normal"
+    assert print_by.get("th", {}).get("white-space") == "normal"
+    parser = _GridChildren()
+    parser.feed(dash_html)
+    assert parser.grids >= 2
+    assert parser.children, "no .grid2 children found"
+    assert all(tag == "section" for tag, _ in parser.children), parser.children
+    assert len(parser.children) == 2 * parser.grids
 
 
 def test_dashboard_footer_and_titles_unchanged(dash_html):

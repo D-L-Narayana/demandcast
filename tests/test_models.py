@@ -221,6 +221,61 @@ def test_theta_indices_clipped_and_alpha_from_grid():
     assert np.all(m14.seasonal_ >= 0.1)
 
 
+def assert_seasonal_contract(seasonal, season):
+    # `Theta.seasonal_` is always a 1-D float64 array with one index per position in the cycle
+    assert isinstance(seasonal, np.ndarray)
+    assert seasonal.dtype == np.float64
+    assert seasonal.ndim == 1
+    assert seasonal.shape == (season,)
+
+
+def test_theta_seasonal_indices_are_1d_float64_with_exact_clipped_values():
+    # Unfitted: flat indices of the requested length
+    assert_seasonal_contract(Theta().seasonal_, 7)
+    np.testing.assert_array_equal(Theta().seasonal_, np.ones(7))
+    assert_seasonal_contract(Theta(season=12).seasonal_, 12)
+    # Two identical weeks 0, 7, ..., 42: mean 21 -> raw indices j/3 (all sums exact), the zero
+    # weekday clipped up to 0.1; the fitted forecast is pinned too (values from the model as
+    # shipped, so the typing of `seasonal_` can never silently change the numbers).
+    m = Theta().fit(np.tile(np.arange(0.0, 49.0, 7.0), 2))
+    assert_seasonal_contract(m.seasonal_, 7)
+    np.testing.assert_array_equal(m.seasonal_, [0.1, 1 / 3, 2 / 3, 1.0, 4 / 3, 5 / 3, 2.0])
+    assert m.alpha_ == 0.5
+    assert m.slope_ == pytest.approx(0.5538461538461539, rel=1e-12)
+    assert m.intercept_ == pytest.approx(14.4, rel=1e-12)
+    np.testing.assert_allclose(
+        m.predict(7),
+        [
+            2.1387186373197116,
+            7.221369816706731,
+            14.627355018028846,
+            22.217955603966345,
+            29.993171574519227,
+            37.9530029296875,
+            46.09744966947115,
+        ],
+        rtol=1e-12,
+    )
+    # season 12, flat 1 with a 1000 spike at position 3: mean 84.25 -> 11.87 clipped to 10,
+    # 0.0119 clipped to 0.1 everywhere else
+    y12 = np.ones(24)
+    y12[3::12] = 1000.0
+    m12 = Theta(season=12).fit(y12)
+    assert_seasonal_contract(m12.seasonal_, 12)
+    expected12 = np.full(12, 0.1)
+    expected12[3] = 10.0
+    np.testing.assert_array_equal(m12.seasonal_, expected12)
+    # n < 2 * season: no deseasonalisation -> all ones, same dtype/shape contract
+    short = Theta().fit(np.arange(1.0, 14.0))
+    assert_seasonal_contract(short.seasonal_, 7)
+    np.testing.assert_array_equal(short.seasonal_, np.ones(7))
+    # all-zero history keeps the flat indices and forecasts zeros
+    zero = Theta().fit(np.zeros(20))
+    assert_seasonal_contract(zero.seasonal_, 7)
+    np.testing.assert_array_equal(zero.seasonal_, np.ones(7))
+    np.testing.assert_array_equal(zero.predict(7), np.zeros(7))
+
+
 # ---- Holt-Winters: batch grid evaluation == scalar reference ------------------------------
 def hw_scalar_reference_fit(model, y):
     """Baseline selection loop, kept in the test as the per-candidate reference."""

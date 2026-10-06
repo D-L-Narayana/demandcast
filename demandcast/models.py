@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from itertools import product
 
 import numpy as np
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 
 SEASON = 7  # weekly seasonality for daily retail data
 PROMO_PREFIX = "promo_"  # make_model("promo_<base>") -> PromoAdjusted(<base>)
@@ -361,9 +361,10 @@ class Theta(Forecaster):
     4. Equal-weight combination, reseasonalisation, clipping:
            yhat_{n+h} = max(0, [0.5 * L_{n+h-1} + 0.5 * level_{n-1}] * I_{(n+h-1) mod m})
 
-    Guards: mean(y) == 0 -> zero forecast. Fitted attributes: ``seasonal_`` (I, indexed by
-    position in the cycle relative to y[0]), ``intercept_`` (a), ``slope_`` (b), ``alpha_``,
-    ``level_`` and ``sse_``.
+    Guards: mean(y) == 0 -> zero forecast. Fitted attributes: ``seasonal_`` (I: a 1-D float64
+    array of length ``season``, indexed by position in the cycle relative to y[0]; all ones
+    until ``fit`` deseasonalises), ``intercept_`` (a), ``slope_`` (b), ``alpha_``, ``level_``
+    and ``sse_``.
     """
 
     name = "theta"
@@ -371,7 +372,7 @@ class Theta(Forecaster):
     def __init__(self, season: int = SEASON, alphas: tuple[float, ...] = THETA_ALPHA_GRID):
         self.season = season
         self.alphas = alphas
-        self.seasonal_ = np.ones(season)
+        self.seasonal_: NDArray[np.float64] = np.ones(season)
         self.intercept_ = 0.0
         self.slope_ = 0.0
         self.level_ = 0.0

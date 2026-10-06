@@ -579,7 +579,7 @@ h3{font-size:12px;margin:14px 0 6px;color:var(--muted);text-transform:uppercase;
 main{max-width:1100px;margin:0 auto;padding:16px 32px 48px}.muted{color:var(--muted)}
 .na{color:var(--muted);font-style:italic;margin:8px 0}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:16px}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px}.kpi-v{font-size:26px;font-weight:700}.kpi-l{font-weight:600}.kpi-s{color:var(--muted);font-size:12px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;min-width:0;overflow-wrap:anywhere}.kpi-v{font-size:26px;font-weight:700}.kpi-l{font-weight:600}.kpi-s{color:var(--muted);font-size:12px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px}
 .scroll{overflow-x:auto}.scroll:focus{outline:2px solid var(--red);outline-offset:2px}
 table{border-collapse:collapse;width:100%;font-size:13px}
@@ -589,8 +589,9 @@ td{padding:6px 8px;border-bottom:1px solid var(--row);white-space:nowrap}td.num{
 code{color:var(--ink);font-size:12px;background:var(--row);padding:1px 4px;border-radius:3px}
 .chart{width:100%;height:auto;display:block}.chart .tick{font-size:10px;fill:var(--muted)}.chart .grid{stroke:var(--line)}.chart .shade{fill:var(--shade)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+.grid2>section{min-width:0}
 footer{color:var(--muted);font-size:12px;margin-top:32px}
-@media print{body{background:#fff;color:#000}header{border-bottom-color:#000}.card,.kpi,section{break-inside:avoid}.card{border-color:#999}.scroll{overflow:visible}h2{break-after:avoid}.grid2{grid-template-columns:1fr 1fr}footer{margin-top:16px}}
+@media print{body{background:#fff;color:#000}header{border-bottom-color:#000}.card,.kpi,section{break-inside:avoid}.card{border-color:#999}.scroll{overflow:visible}td,th{white-space:normal}h2{break-after:avoid}.grid2{grid-template-columns:1fr}footer{margin-top:16px}}
 """
 
 

@@ -108,6 +108,17 @@ security policy. The runtime dependency is still NumPy only; Python 3.10+.
 - `HoltWinters.predict()` before `fit()` raised `AttributeError`; all models now raise a clear
   `RuntimeError`.
 - Six pre-existing `mypy` errors.
+- The dashboard overflowed narrow viewports (at 390 px the document scrolled 448 px sideways):
+  CSS-grid items keep their default `min-width:auto`, so a section holding a no-wrap table grew to
+  the table's width instead of letting its `.scroll` wrapper scroll. Grid children now shrink
+  (`.grid2>section{min-width:0}`), KPI tiles wrap long values, and the print stylesheet switches to
+  a single column with wrapping cells so an unclipped table cannot paint over a neighbouring
+  column. Verified in Chromium at 390 and 1280 px, light and dark, under the production headers;
+  found by an independent review of the deployed page.
+- `Theta.seasonal_` is declared as a 1-D `NDArray[np.float64]`: under the NumPy 2.2 type stubs
+  (the Python 3.10 CI job) `np.clip` returns an arbitrary-rank array and the attribute inferred from
+  `np.ones` rejected it. The explicit annotation states the real contract; values, dtype and shape
+  are unchanged and pinned by a regression test.
 
 ## [0.3.0]
 
