@@ -1,11 +1,33 @@
 """Synthetic but realistic retail dataset generator.
 
-Demand for each store × product series is built from multiplicative components:
+Demand for each store x product series is built from multiplicative components::
 
-    demand_t = base_s,p · weekly[dow] · yearly(t) · trend(t) · promo(t) · holiday(t) · noise
+    lam_t    = base[s,p] * weekly[dow_t] * yearly(t) * trend(t) * promo[s,p](t) * holiday(t) * q4(t)
+    demand_t ~ Poisson(lam_t)
 
-Observed sales are then *censored* by a simple inventory simulation so stock-outs appear
-in the data exactly the way they do in real POS feeds (units_sold < true demand, flag = 1).
+with
+
+    base[s,p]  ~ Gamma(shape=4, scale=mean_base[cat]/4) * FORMAT_MULT[store format]
+    weekly     = (0.90, 0.85, 0.88, 0.95, 1.05, 1.30, 1.25)[weekday]      (Mon..Sun)
+    yearly(t)  = 1 + 0.12 * sin(2*pi * (doy_t - 60) / 365.25)
+    trend(t)   = exp(delta * t),  delta ~ N(0, 0.0004)                    (gentle drift)
+    promo(t)   = prod over promotions active on day t of (1 + 3.2 * discount_pct)
+    holiday(t) = largest multiplier of the holidays whose pre-holiday ramp covers day t
+    q4(t)      = 1 + 0.35 * [doy_t > 300] for Toys / Electronics, else 1
+
+Observed sales are then *censored* by a simple (s, S) inventory simulation so stock-outs appear
+in the data exactly the way they do in real POS feeds::
+
+    sold_t          = min(demand_t, on_hand_t)
+    stockout_flag_t = [sold_t < demand_t]
+    revenue_t       = round(sold_t * unit_price * (1 - d_t), 2)
+
+where ``d_t`` is the largest ``discount_pct`` among the promotions (chain-wide or store-specific)
+active for that store/product/day, and 0 when none is active.
+
+Reproducibility contract: every random draw up to and including the sales loop happens in a
+fixed order, so a given ``SimConfig`` always yields a byte-identical dataset.  Opt-in features
+(``future_promo_days``) draw *after* the sales loop; ``snapshot_every_days`` draws nothing.
 """
 
 from __future__ import annotations
@@ -54,20 +76,47 @@ HOLIDAYS = [
     (12, 31, "New Year's Eve", 1.40, 2),
 ]
 
+PROMO_DISCOUNTS = [0.1, 0.15, 0.2, 0.25, 0.3]
+FUTURE_PROMO_PROBABILITY = 0.5  # share of products that get one promotion in the future window
+
 
 @dataclass(frozen=True)
 class SimConfig:
+    """Generator settings.
+
+    ``snapshot_every_days``: in addition to the final-day inventory snapshot, write a snapshot
+    on every day ``i`` with ``(days - 1 - i) % snapshot_every_days == 0`` (counting back from
+    the last day), so backdated runs (``run --cutoff``) find a snapshot as of their cutoff.
+    ``future_promo_days``: also schedule promotions that start strictly after the last
+    calendar day and end within ``future_promo_days`` days after it, so promo-aware forecasts
+    have something to react to.  Both default to the v0.3.0 behaviour (off).
+    """
+
     n_stores: int = 10
     n_products: int = 40
     start: date = date(2024, 1, 1)
     days: int = 730
     seed: int = 42
     stockout_prob_scale: float = 1.0
+    snapshot_every_days: int | None = None
+    future_promo_days: int = 0
+
+    def __post_init__(self) -> None:
+        if self.snapshot_every_days is not None and self.snapshot_every_days < 1:
+            raise ValueError("snapshot_every_days must be >= 1 or None")
+        if self.future_promo_days < 0:
+            raise ValueError("future_promo_days must be >= 0")
 
 
 def _holiday_lookup(start: date, days: int) -> dict[date, tuple[str, float]]:
+    """Map day -> (holiday name, demand multiplier) for every calendar year the range touches.
+
+    Each holiday lifts demand on its anchor day by ``mult`` and ramps up over the ``span``
+    preceding days: ``1 + (mult - 1) * (1 - k / span)`` for ``k`` days before the anchor.
+    """
     out: dict[date, tuple[str, float]] = {}
-    for year in {start.year, (start + timedelta(days=days)).year}:
+    last_year = (start + timedelta(days=days)).year
+    for year in range(start.year, last_year + 1):
         for m, d, name, mult, span in HOLIDAYS:
             anchor = date(year, m, d)
             for k in range(span):
@@ -79,6 +128,7 @@ def _holiday_lookup(start: date, days: int) -> dict[date, tuple[str, float]]:
 
 
 def build_calendar(start: date, days: int) -> list[tuple]:
+    """Calendar rows (day, day_of_week, week_of_year, month, year, is_weekend, holiday_name)."""
     hol = _holiday_lookup(start, days)
     rows = []
     for i in range(days):
@@ -98,8 +148,51 @@ def build_calendar(start: date, days: int) -> list[tuple]:
     return rows
 
 
+def _future_promotions(
+    rng: np.random.Generator, cfg: SimConfig, first_promo_id: int
+) -> list[tuple[int, int, int | None, str, str, float]]:
+    """Promotions scheduled after the calendar ends (opt-in via ``future_promo_days``).
+
+    Must be called after the sales loop so the historical draws stay untouched.  Each product
+    independently receives one promotion with probability ``FUTURE_PROMO_PROBABILITY``; its
+    start offset, length, scope (chain-wide 60 % / single store) and discount follow the same
+    distributions as the historical promotions and the whole promotion lies inside
+    ``[last_day + 1, last_day + future_promo_days]``.
+    """
+    window = cfg.future_promo_days
+    first_future_day = cfg.start + timedelta(days=cfg.days)
+    out: list[tuple[int, int, int | None, str, str, float]] = []
+    promo_id = first_promo_id
+    for pid in range(1, cfg.n_products + 1):
+        if rng.random() >= FUTURE_PROMO_PROBABILITY:
+            continue
+        start_off = int(rng.integers(0, max(1, window - 14)))
+        length = int(rng.integers(3, 15))
+        end_off = min(start_off + length, window - 1)
+        store_id = None if rng.random() < 0.6 else int(rng.integers(1, cfg.n_stores + 1))
+        discount = float(np.round(rng.choice(PROMO_DISCOUNTS), 2))
+        out.append(
+            (
+                promo_id,
+                pid,
+                store_id,
+                (first_future_day + timedelta(days=start_off)).isoformat(),
+                (first_future_day + timedelta(days=end_off)).isoformat(),
+                discount,
+            )
+        )
+        promo_id += 1
+    return out
+
+
 def generate(conn: sqlite3.Connection, cfg: SimConfig | None = None) -> dict[str, int]:
-    """Populate an initialised schema with a full synthetic dataset. Returns row counts."""
+    """Populate an initialised schema with a full synthetic dataset. Returns row counts.
+
+    See the module docstring for the demand equation.  The draw order is part of the public
+    contract (byte-identical datasets per ``SimConfig``): master data, promotions, then one
+    (base, trend, Poisson demand) draw group per store x product series; future promotions are
+    drawn last.
+    """
     cfg = cfg or SimConfig()
     rng = np.random.default_rng(cfg.seed)
     counts: dict[str, int] = {}
@@ -139,11 +232,11 @@ def generate(conn: sqlite3.Connection, cfg: SimConfig | None = None) -> dict[str
     hol = _holiday_lookup(cfg.start, cfg.days)
 
     # ---- promotions ------------------------------------------------------------------------
-    promos = []
+    promos: list[tuple[int, int, int | None, str, str, float]] = []
     promo_id = 1
     for pid in range(1, cfg.n_products + 1):
         for _ in range(int(rng.integers(2, 6))):
-            s = cfg.start + timedelta(days=int(rng.integers(0, cfg.days - 14)))
+            promo_start = cfg.start + timedelta(days=int(rng.integers(0, cfg.days - 14)))
             length = int(rng.integers(3, 15))
             store_id = None if rng.random() < 0.6 else int(rng.integers(1, cfg.n_stores + 1))
             promos.append(
@@ -151,23 +244,29 @@ def generate(conn: sqlite3.Connection, cfg: SimConfig | None = None) -> dict[str
                     promo_id,
                     pid,
                     store_id,
-                    s.isoformat(),
-                    (s + timedelta(days=length)).isoformat(),
-                    float(np.round(rng.choice([0.1, 0.15, 0.2, 0.25, 0.3]), 2)),
+                    promo_start.isoformat(),
+                    (promo_start + timedelta(days=length)).isoformat(),
+                    float(np.round(rng.choice(PROMO_DISCOUNTS), 2)),
                 )
             )
             promo_id += 1
 
-    # promo multiplier tensor [product, store, day]
+    # promo multiplier tensor [product, store, day] and the matching discount tensor
+    # (largest discount_pct active per store/product/day -> drives promo-day revenue, D9)
     promo_mult = np.ones((cfg.n_products, cfg.n_stores, cfg.days))
-    for _, pid, sid, s, e, disc in promos:
-        s_i = (date.fromisoformat(s) - cfg.start).days
-        e_i = (date.fromisoformat(e) - cfg.start).days
+    promo_disc = np.zeros((cfg.n_products, cfg.n_stores, cfg.days))
+    for _, pid, sid, start_iso, end_iso, disc in promos:
+        s_i = (date.fromisoformat(start_iso) - cfg.start).days
+        e_i = (date.fromisoformat(end_iso) - cfg.start).days
         lift = 1 + 3.2 * disc  # 10% off -> 1.32x, 30% off -> ~1.96x
         if sid is None:
             promo_mult[pid - 1, :, s_i : e_i + 1] *= lift
+            window = promo_disc[pid - 1, :, s_i : e_i + 1]
+            np.maximum(window, disc, out=window)
         else:
             promo_mult[pid - 1, sid - 1, s_i : e_i + 1] *= lift
+            window = promo_disc[pid - 1, sid - 1, s_i : e_i + 1]
+            np.maximum(window, disc, out=window)
 
     # ---- demand components -----------------------------------------------------------------
     t = np.arange(cfg.days)
@@ -176,6 +275,14 @@ def generate(conn: sqlite3.Connection, cfg: SimConfig | None = None) -> dict[str
     doy = np.array([(cfg.start + timedelta(days=int(i))).timetuple().tm_yday for i in t])
     yearly = 1 + 0.12 * np.sin(2 * np.pi * (doy - 60) / 365.25)
     holiday = np.array([hol.get(cfg.start + timedelta(days=int(i)), ("", 1.0))[1] for i in t])
+
+    # inventory snapshot days: always the final day; with snapshot_every_days=k also every
+    # k-th day counting back from it
+    if cfg.snapshot_every_days is None:
+        snapshot_days = {cfg.days - 1}
+    else:
+        k = cfg.snapshot_every_days
+        snapshot_days = {i for i in range(cfg.days) if (cfg.days - 1 - i) % k == 0}
 
     sales_rows: list[tuple] = []
     snap_rows: list[tuple] = []
@@ -192,6 +299,7 @@ def generate(conn: sqlite3.Connection, cfg: SimConfig | None = None) -> dict[str
             if cat in ("Toys", "Electronics"):
                 lam = lam * (1 + 0.35 * (doy > 300))
             demand = rng.poisson(lam)
+            disc_by_day = promo_disc[pid - 1, sid - 1]
 
             # Inventory censoring: naive (s, S) policy with lead-time delays.
             on_hand = int(lam[:28].sum() * 1.2)
@@ -213,19 +321,23 @@ def generate(conn: sqlite3.Connection, cfg: SimConfig | None = None) -> dict[str
                     on_order += qty
                 day_iso = calendar[i][0]
                 price = price_by_pid[pid]
-                promo_disc = 0.0 if promo_mult[pid - 1, sid - 1, i] == 1 else 0.2
+                promo_discount = float(disc_by_day[i])  # 0.0 off-promo -> units * price exactly
                 sales_rows.append(
                     (
                         sid,
                         pid,
                         day_iso,
                         int(sold),
-                        round(sold * price * (1 - promo_disc), 2),
+                        round(sold * price * (1 - promo_discount), 2),
                         stockout,
                     )
                 )
-                if i == cfg.days - 1:
+                if i in snapshot_days:
                     snap_rows.append((sid, pid, day_iso, int(on_hand), int(on_order)))
+
+    # ---- future promotions (opt-in; drawn only after every historical draw) ----------------
+    if cfg.future_promo_days > 0:
+        promos.extend(_future_promotions(rng, cfg, promo_id))
 
     # ---- bulk load ------------------------------------------------------------------------
     with transaction(conn):

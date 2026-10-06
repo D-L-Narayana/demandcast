@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -11,23 +19,50 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install
-        run: pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev]"
       - name: Lint
-        run: ruff check . && ruff format --check .
-      - name: Test
-        run: pytest -q
-      - name: Smoke-run the pipeline
         run: |
-          demandcast --db ci.db init --stores 3 --products 8 --days 300
-          demandcast --db ci.db run --horizon 14 --folds 2
-          demandcast --db ci.db query forecast_accuracy_leaderboard
-          demandcast --db ci.db dashboard --out out/index.html
+          python -m ruff check .
+          python -m ruff format --check .
+      - name: Type-check
+        run: python -m mypy demandcast scripts/verify_dashboard.py benchmarks/bench.py
+      - name: Test
+        run: python -m pytest -q -rs
+      - name: Smoke-run the pipeline
+        # Mirrors `make smoke`: synthetic data with inventory snapshots and future promotions,
+        # a backdated run evaluated against the realised sales, a budgeted run with per-class
+        # service levels, queries, exports, a load round-trip and the dashboard.
+        run: |
+          python -m demandcast --db ci.db init --stores 3 --products 8 --days 300 --snapshot-every 7 --future-promo-days 14
+          python -m demandcast --db ci.db run --horizon 14 --folds 2 --workers 2 --cutoff 2024-10-12
+          python -m demandcast --db ci.db evaluate --json
+          python -m demandcast --db ci.db run --horizon 14 --folds 2 --workers 2 --order-budget 20000 --service-level-by-class A=0.98,B=0.95,C=0.90
+          python -m demandcast --db ci.db runs
+          python -m demandcast --db ci.db query forecast_accuracy_leaderboard
+          python -m demandcast --db ci.db query evaluation_history
+          python -m demandcast --db ci.db export orders --out out/orders.csv
+          python -m demandcast --db ci.db export dataset --out out/dataset
+          python -m demandcast --db rt.db load --dir out/dataset
+          python -m demandcast --db rt.db run --horizon 14 --folds 2 --workers 2
+          python -m demandcast --db ci.db dashboard --out out/index.html
           test -s out/index.html
+      - name: Verify dashboard policy and response headers (static + served)
+        run: python scripts/verify_dashboard.py --html out/index.html --vercel vercel.json --json
+      - name: Benchmark (quick)
+        run: python benchmarks/bench.py --quick
+      - name: Upload dashboard artifact
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-py${{ matrix.python-version }}
+          path: out/index.html
+          if-no-files-found: warn

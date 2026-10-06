@@ -5,10 +5,14 @@ build/
 dist/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 *.db
 *.db-wal
 *.db-shm
 .venv/
 out/
 ci.db*
+rt.db*
+demo.db*
+benchmarks/results/
 .vercel

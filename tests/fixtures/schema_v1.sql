@@ -1,9 +1,5 @@
 -- DemandCast relational schema (SQLite dialect, portable to PostgreSQL with minor changes).
 -- Third-normal-form core tables + append-only forecast/replenishment outputs.
---
--- Schema version 2 (PRAGMA user_version, stamped at the end of this file). Databases created by
--- earlier releases are upgraded in place by demandcast.db.migrate(), which applies the same
--- additive changes (new columns / tables / indexes) that are written inline below.
 
 PRAGMA foreign_keys = ON;
 
@@ -48,8 +44,6 @@ CREATE TABLE IF NOT EXISTS promotions (
     CHECK (end_day >= start_day)
 );
 
-CREATE INDEX IF NOT EXISTS idx_promotions_product   ON promotions(product_id, start_day, end_day);
-
 -- One row per store × product × day. units_sold is *observed* sales (censored by stock-outs).
 CREATE TABLE IF NOT EXISTS sales_daily (
     store_id        INTEGER NOT NULL REFERENCES stores(store_id),
@@ -74,7 +68,6 @@ CREATE TABLE IF NOT EXISTS inventory_snapshots (
 ) WITHOUT ROWID;
 
 -- Every forecasting job is a run; forecasts are append-only and keyed by run.
--- config_json holds the full RunConfig so a run is reproducible from the database alone.
 CREATE TABLE IF NOT EXISTS forecast_runs (
     run_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at      TEXT    NOT NULL,
@@ -83,10 +76,7 @@ CREATE TABLE IF NOT EXISTS forecast_runs (
     horizon_days    INTEGER NOT NULL CHECK (horizon_days > 0),
     series_count    INTEGER,
     status          TEXT    NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'succeeded', 'failed')),
-    notes           TEXT,
-    config_json     TEXT,                      -- JSON of the RunConfig used (NULL on pre-v2 rows)
-    interval_level  REAL,                      -- nominal prediction-interval level, e.g. 0.8
-    engine_version  TEXT                       -- demandcast.__version__ that produced the run
+    notes           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS forecasts (
@@ -98,11 +88,8 @@ CREATE TABLE IF NOT EXISTS forecasts (
     yhat            REAL    NOT NULL CHECK (yhat >= 0),
     yhat_lower      REAL    NOT NULL CHECK (yhat_lower >= 0),
     yhat_upper      REAL    NOT NULL,
-    promo_flag      INTEGER NOT NULL DEFAULT 0, -- 1 when a promotion is scheduled on target_day
     PRIMARY KEY (run_id, store_id, product_id, target_day)
 ) WITHOUT ROWID;
-
-CREATE INDEX IF NOT EXISTS idx_forecasts_series_day ON forecasts(store_id, product_id, target_day);
 
 CREATE TABLE IF NOT EXISTS backtest_metrics (
     run_id          INTEGER NOT NULL REFERENCES forecast_runs(run_id),
@@ -134,41 +121,5 @@ CREATE TABLE IF NOT EXISTS replenishment_orders (
     order_qty           INTEGER NOT NULL CHECK (order_qty >= 0),
     service_level       REAL    NOT NULL,
     reason              TEXT    NOT NULL,
-    stockout_risk       REAL,                  -- P(demand over lead time + review > inventory position)
-    priority            REAL,                  -- cost-weighted expected shortfall (order-book ranking)
-    requested_qty       INTEGER,               -- qty before budget allocation (NULL on old rows)
     UNIQUE (run_id, store_id, product_id)
 );
-
--- Realised accuracy of a (backdated) run once actual sales for its horizon are available.
-CREATE TABLE IF NOT EXISTS forecast_evaluations (
-    run_id          INTEGER NOT NULL REFERENCES forecast_runs(run_id),
-    store_id        INTEGER NOT NULL REFERENCES stores(store_id),
-    product_id      INTEGER NOT NULL REFERENCES products(product_id),
-    model_name      TEXT    NOT NULL,
-    n_days          INTEGER NOT NULL CHECK (n_days > 0),
-    mae             REAL    NOT NULL,
-    wape            REAL,
-    bias            REAL    NOT NULL,
-    coverage        REAL    NOT NULL CHECK (coverage BETWEEN 0 AND 1),
-    abs_error_sum   REAL    NOT NULL,
-    actual_sum      REAL    NOT NULL,
-    stockout_days   INTEGER NOT NULL DEFAULT 0,
-    evaluated_at    TEXT    NOT NULL,
-    PRIMARY KEY (run_id, store_id, product_id)
-) WITHOUT ROWID;
-
--- Provenance of every CSV load (one row per table per load command).
-CREATE TABLE IF NOT EXISTS data_loads (
-    load_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    loaded_at       TEXT    NOT NULL,
-    source          TEXT    NOT NULL,
-    table_name      TEXT    NOT NULL,
-    mode            TEXT    NOT NULL CHECK (mode IN ('insert', 'upsert', 'replace')),
-    rows_inserted   INTEGER NOT NULL,
-    rows_updated    INTEGER NOT NULL DEFAULT 0,
-    rows_rejected   INTEGER NOT NULL DEFAULT 0,
-    notes           TEXT
-);
-
-PRAGMA user_version = 2;

@@ -1,0 +1,4 @@
+product_id,sku,name,category,unit_cost,unit_price,case_pack,lead_time_days,shelf_life_days
+1,SKU-GRO-0001,Grocery item 1,Grocery,15.53,27.34,6,2,21
+2,SKU-HOU-0002,Household item 2,Household,100.99,195.67,1,5,
+3,SKU-BEA-0003,Beauty item 3,Beauty,60.06,133.83,6,12,365

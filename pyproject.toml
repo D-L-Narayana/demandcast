@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "demandcast"
-version = "0.3.0"
+version = "0.4.0"
 description = "Store-level retail demand forecasting and inventory replenishment engine built on Python + SQL."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,7 @@ classifiers = [
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "ruff>=0.4"]
+dev = ["pytest>=7", "ruff>=0.4", "mypy>=1.10"]
 
 [project.scripts]
 demandcast = "demandcast.cli:main"
@@ -29,18 +29,37 @@ demandcast = "demandcast.cli:main"
 include = ["demandcast*"]
 
 [tool.setuptools.package-data]
-demandcast = ["sql/*.sql"]
+demandcast = ["sql/*.sql", "py.typed"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = ["E", "F", "I", "B", "UP", "SIM", "C4", "PT", "RUF"]
+# RUF001-003: the docstrings/strings deliberately use ×, σ, Σ, Φ, φ, − for the equations.
+# PT018: baseline tests keep their composite assertions byte-identical.
+# SIM905: `"col_a col_b".split()` is the idiom the tests use for column lists.
+ignore = ["RUF012", "SIM108", "PT011", "RUF001", "RUF002", "RUF003", "PT018", "SIM905"]
 
 [tool.ruff.lint.per-file-ignores]
 "demandcast/dashboard.py" = ["E501"]
 "tests/*" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = false
+
+[tool.mypy]
+python_version = "3.10"
+files = ["demandcast"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
